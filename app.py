@@ -11,6 +11,20 @@ uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
+    # --- Normalise column names ---
+df.columns = df.columns.str.strip()  # remove spaces at ends
+df.columns = df.columns.str.lower()  # make all lowercase
+
+# Try to standardise known columns
+rename_map = {
+    "shipping country": "Shipping country",
+    "ship country": "Shipping country",
+    "country": "Shipping country",
+}
+for old, new in rename_map.items():
+    if old in df.columns:
+        df.rename(columns={old: new}, inplace=True)
+
 
     # --- Add new columns ---
     if "Product length" in df.columns:
