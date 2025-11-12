@@ -24,14 +24,20 @@ if uploaded_file is not None:
             df.rename(columns={old: new}, inplace=True)
 
     # --- Add new columns ---
-    if "Product length" in df.columns:
-        idx = df.columns.get_loc("Product length")
-        df.insert(idx + 1, "Product weight", "")
-        df.insert(idx + 2, "Package Size", "")
-        df.insert(idx + 3, "Service Code", "")
-    else:
-        st.error("Couldn't find 'Product length' column.")
-        st.stop()
+    # --- Find 'Product length' (case-insensitive, partial match) ---
+possible_length_cols = [c for c in df.columns if "length" in c.lower()]
+if possible_length_cols:
+    product_length_col = possible_length_cols[0]
+    idx = df.columns.get_loc(product_length_col)
+    df.insert(idx + 1, "Product weight", "")
+    df.insert(idx + 2, "Package Size", "")
+    df.insert(idx + 3, "Service Code", "")
+else:
+    st.warning("⚠️ Couldn't find a 'Product length' column — adding new columns at end.")
+    df["Product weight"] = ""
+    df["Package Size"] = ""
+    df["Service Code"] = ""
+
 
     df["IOSS"] = ""
 
