@@ -25,7 +25,7 @@ if uploaded_file is not None:
 
     # --- Add new columns ---
     # --- Find 'Product length' (case-insensitive, partial match) ---
-possible_length_cols = [c for c in df.columns if "length" in c.lower()]
+possible_length_cols = [str(c) for c in df.columns if "length" in str(c).lower()]
 if possible_length_cols:
     product_length_col = possible_length_cols[0]
     idx = df.columns.get_loc(product_length_col)
