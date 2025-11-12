@@ -1,143 +1,140 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
+import re
 
-st.set_page_config(page_title="CSV Customiser", page_icon="📦", layout="wide")
+st.set_page_config(page_title="CSV Customiser", page_icon="📦")
+st.title("📦 CSV Customiser Tool")
+st.write("Upload your .csv and I’ll apply your rules automatically!")
 
-st.title("📦 CSV Customiser App")
-st.write("Upload your subscription .csv file, and I’ll automatically customise it for Click & Drop export.")
+# --- Constants & Setup ---
+IOSS_NUMBER = "IM5280003071"
+GENERIC_US_PHONE = "123-123-1234"
 
-uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+BUNDLE_IDS = {"iljcpq05", "ay5cwt7h", "y23m38jk", "nn5wwlw1", "rfa96qoe", "b4q2b6wi"}
+MAGONLY_IDS = {"j6a63izr", "h05r1t4s", "ljae93q8"}
+WEIGHT_EXCEPTIONS = {"wl7k4elo": 0.920, "pjzmis04": 0.980}
+WEIGHT_BUNDLE = 0.490
+WEIGHT_MAGONLY = 0.430
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+ALLOWED_PRODUCT_NAMES = {
+    "12 Month Bundle Subscription",
+    "12 Month Mag Only Subscription",
+    "Bundle (Print Edition + Vinyl / CD + Web Premium)",
+    "Magazine (Print Edition + Web Premium)",
+    "Magazine Only monthly subscription",
+}
 
-    # --- Normalise and clean column names ---
-    df.columns = df.columns.map(lambda x: str(x).strip())
-    df.columns = df.columns.map(lambda x: x.replace("\n", " ").strip())
+EU_COUNTRIES = {
+    "austria","belgium","bulgaria","croatia","cyprus","czechia","czech republic",
+    "denmark","estonia","finland","france","germany","greece","hungary","ireland",
+    "italy","latvia","lithuania","luxembourg","malta","netherlands","poland",
+    "portugal","romania","slovakia","slovenia","spain","sweden"
+}
+USA_NAMES = {"united states","united states of america","usa","us"}
+UK_NAMES = {"united kingdom","uk","great britain","britain","england","scotland","wales","northern ireland"}
 
-    # Lowercase copy for easier matching
-    lower_cols = [c.lower() for c in df.columns]
+def normalize_country(v):
+    if pd.isna(v): return ""
+    return str(v).strip().lower()
 
-    # --- Helper to find columns by name (case-insensitive, partial match) ---
-    def find_col(possible_names):
-        for name in possible_names:
-            for col in df.columns:
-                if name.lower() in str(col).lower():
-                    return col
+def has_phone(text):
+    if pd.isna(text): return False
+    return bool(re.search(r"\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\+\d{1,3}\s?\d{4,}", str(text)))
+
+def process_csv(df):
+    def find_col(df, guesses):
+        cols_lower = {c.lower(): c for c in df.columns}
+        for g in guesses:
+            if g.lower() in cols_lower:
+                return cols_lower[g.lower()]
+        for c_l, c_orig in cols_lower.items():
+            for g in guesses:
+                if g.lower() in c_l:
+                    return c_orig
         return None
 
-    # --- Identify important columns ---
-    shipping_col = find_col(["shipping country", "ship country", "country"])
-    product_len_col = find_col(["product length", "length"])
-    product_id_col = find_col(["product id", "sku", "id"])
-    product_name_col = find_col(["product name", "name"])
-    notes_col = find_col(["notes", "comment", "phone"])
-    price_col = find_col(["product price", "price"])
-    order_total_col = find_col(["order total", "total"])
-    order_postage_col = find_col(["order postage", "postage", "shipping cost"])
+    product_id_col = find_col(df, ["Product ID","ProductID"])
+    product_name_col = find_col(df, ["Product name"])
+    product_length_col = find_col(df, ["Product length"])
+    notes_col = find_col(df, ["Notes"])
+    country_col = find_col(df, ["Country"])
+    product_price_col = find_col(df, ["Product price"])
+    order_total_col = find_col(df, ["Order total"])
+    order_postage_col = find_col(df, ["Order postage"])
 
-    # --- Insert new columns after product length if found ---
-    if product_len_col:
-        idx = df.columns.get_loc(product_len_col)
-        df.insert(idx + 1, "Product weight", "")
-        df.insert(idx + 2, "Package Size", "")
-        df.insert(idx + 3, "Service Code", "")
-    else:
-        st.warning("⚠️ 'Product length' column not found — adding new columns at end.")
-        for col in ["Product weight", "Package Size", "Service Code"]:
-            if col not in df.columns:
-                df[col] = ""
+    for c in [product_id_col, product_name_col, notes_col, country_col,
+              product_price_col, order_total_col, order_postage_col]:
+        if c not in df.columns:
+            df[c] = ""
 
-    # Always add IOSS at the end
+    insert_at = list(df.columns).index(product_length_col)+1 if product_length_col in df.columns else len(df.columns)
+    for i,colname in enumerate(["Product weight","Package Size","Service Code"]):
+        if colname not in df.columns:
+            df.insert(insert_at+i, colname, "")
     if "IOSS" not in df.columns:
         df["IOSS"] = ""
 
-    # --- Define product rules ---
-    bundles = ["iljcpq05", "ay5cwt7h", "y23m38jk", "nn5wwlw1", "rfa96qoe", "b4q2b6wi"]
-    mag_only = ["j6a63izr", "h05r1t4s", "Ljae93q8"]
+    def process_row(row):
+        pid = str(row[product_id_col]).strip().lower() if pd.notna(row[product_id_col]) else ""
+        country = normalize_country(row[country_col])
+        pname = str(row[product_name_col]).strip()
 
-    def assign_weight(pid):
-        if pid == "wl7k4elo":
-            return 0.920
-        elif pid == "pjzmis04":
-            return 0.980
-        elif pid in bundles:
-            return 0.490
-        elif pid in mag_only:
-            return 0.430
-        return ""
+        if pid in WEIGHT_EXCEPTIONS:
+            weight = WEIGHT_EXCEPTIONS[pid]
+        elif pid in BUNDLE_IDS:
+            weight = WEIGHT_BUNDLE
+        elif pid in MAGONLY_IDS:
+            weight = WEIGHT_MAGONLY
+        else:
+            weight = ""
+        row["Product weight"] = weight
 
-    if product_id_col:
-        df["Product weight"] = df[product_id_col].astype(str).apply(assign_weight)
+        row["IOSS"] = IOSS_NUMBER if country in EU_COUNTRIES else ""
 
-    # --- EU countries for IOSS ---
-    eu_countries = [
-        "Austria","Belgium","Bulgaria","Croatia","Cyprus","Czech Republic","Denmark",
-        "Estonia","Finland","France","Germany","Greece","Hungary","Ireland","Italy",
-        "Latvia","Lithuania","Luxembourg","Malta","Netherlands","Poland","Portugal",
-        "Romania","Slovakia","Slovenia","Spain","Sweden"
-    ]
+        if country in USA_NAMES:
+            row["Package Size"] = "Parcel"
+            row["Service Code"] = "MPR"
+            if not has_phone(row[notes_col]):
+                # clean nan and add phone only
+                row[notes_col] = GENERIC_US_PHONE
+        else:
+            if pid in {"pjzmis04","wl7k4elo"}:
+                row["Package Size"] = "Parcel"
+            else:
+                row["Package Size"] = "Large Letter"
 
-    if shipping_col:
-        df["IOSS"] = df[shipping_col].apply(
-            lambda c: "IM5280003071" if any(eu in str(c) for eu in eu_countries) else ""
+            if country in UK_NAMES:
+                row["Service Code"] = "TPS48" if pid=="pjzmis04" else "CRL48"
+            else:
+                row["Service Code"] = "DE4" if pid=="wl7k4elo" else "DG4"
+
+        if pname not in ALLOWED_PRODUCT_NAMES:
+            row[product_name_col] = ""
+
+        try:
+            price = float(re.sub(r"[^\d.]", "", str(row[product_price_col]))) if row[product_price_col] else 0
+        except:
+            price = 0
+        if price > 19:
+            row[product_price_col] = ""
+            row[order_total_col] = ""
+            row[order_postage_col] = ""
+        return row
+
+    return df.apply(process_row, axis=1)
+
+uploaded = st.file_uploader("Upload CSV file", type="csv")
+if uploaded:
+    df = pd.read_csv(uploaded, dtype=str)
+    st.success("✅ File uploaded successfully!")
+    if st.button("Process File"):
+        processed = process_csv(df)
+        st.success("🎉 Done! Click below to download.")
+        csv_bytes = processed.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download Processed CSV",
+            data=csv_bytes,
+            file_name=f"AUTO_CONVERTED_WEIGHT+IOSS_ADDED_{uploaded.name}",
+            mime="text/csv",
         )
 
-    # --- USA orders ---
-    if shipping_col:
-        usa_mask = df[shipping_col].str.contains("United States", case=False, na=False)
-
-        if notes_col:
-            df[notes_col] = df[notes_col].fillna("").astype(str)
-            df.loc[usa_mask & (df[notes_col].str.strip() == ""), notes_col] = "123-123-1234"
-
-        df.loc[usa_mask, "Service Code"] = "MPR"
-        df.loc[usa_mask, "Package Size"] = "Parcel"
-
-    # --- UK and others ---
-    if shipping_col:
-        uk_mask = df[shipping_col].str.contains("United Kingdom", case=False, na=False)
-        df.loc[uk_mask, "Service Code"] = "CRL48"
-        df.loc[df.get(product_id_col, "") == "pjzmis04", "Service Code"] = "TPS48"
-        df.loc[~uk_mask, "Service Code"] = "DG4"
-        df.loc[df.get(product_id_col, "") == "wl7k4elo", "Service Code"] = "DE4"
-
-    # --- Package size defaults ---
-    df.loc[df["Package Size"] == "", "Package Size"] = "Large Letter"
-    df.loc[df.get(product_id_col, "").isin(["pjzmis04", "wl7k4elo"]), "Package Size"] = "Parcel"
-
-    # --- Clean product names ---
-    valid_names = [
-        "12 Month Bundle Subscription",
-        "12 Month Mag Only Subscription",
-        "Bundle (Print Edition + Vinyl / CD + Web Premium)",
-        "Magazine (Print Edition + Web Premium)",
-        "Magazine Only monthly subscription",
-    ]
-    if product_name_col:
-        df.loc[~df[product_name_col].isin(valid_names), product_name_col] = ""
-
-    # --- Delete high prices ---
-    if price_col:
-        mask = pd.to_numeric(df[price_col], errors="coerce") > 19
-        for col in [price_col, order_total_col, order_postage_col]:
-            if col and col in df.columns:
-                df.loc[mask, col] = ""
-
-    # --- Prepare file for download ---
-    output = BytesIO()
-    filename = f"AUTO_CONVERTED_WEIGHT+IOSS_ADDED_{uploaded_file.name}"
-    df.to_csv(output, index=False)
-    output.seek(0)
-
-    st.success("✅ File processed successfully!")
-    st.download_button(
-        label="📥 Download customised CSV",
-        data=output,
-        file_name=filename,
-        mime="text/csv"
-    )
-
-else:
-    st.info("⬆️ Upload a .csv file to begin.")
